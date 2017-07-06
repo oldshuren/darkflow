@@ -8,6 +8,7 @@ from .framework import create_framework
 from ..dark.darknet import Darknet
 import json
 import os
+from datetime import datetime
 
 class TFNet(object):
 
@@ -33,7 +34,7 @@ class TFNet(object):
 	build_train_op = help.build_train_op
 	load_from_ckpt = help.load_from_ckpt
 
-	def __init__(self, FLAGS, darknet = None):
+	def __init__(self, FLAGS, darknet = None, cluster = None, replicas_to_aggregate = None, num_of_workers = None, server = None):
 		self.ntrain = 0
 
 		if isinstance(FLAGS, dict):
@@ -44,6 +45,9 @@ class TFNet(object):
 			FLAGS = newFLAGS
 
 		self.FLAGS = FLAGS
+		self.replicas_to_aggregate = replicas_to_aggregate
+		self.num_of_workers = num_of_workers
+		self.server = server
 		if self.FLAGS.pbLoad and self.FLAGS.metaLoad:
 			self.say('\nLoading from .pb and .meta')
 			self.graph = tf.Graph()
@@ -68,12 +72,22 @@ class TFNet(object):
 		self.say('\nBuilding net ...')
 		start = time.time()
 		self.graph = tf.Graph()
-		device_name = FLAGS.gpuName \
-			if FLAGS.gpu > 0.0 else None
-		with tf.device(device_name):
-			with self.graph.as_default() as g:
+		if FLAGS.jobType == 'worker' : 
+			self.say('\nUsing Distributed training')
+			with tf.device(tf.train.replica_device_setter(
+					worker_device="/job:worker/task:%d" % FLAGS.taskId,
+					cluster=cluster)):
+				self.global_step = tf.Variable(0, dtype=tf.int32, trainable=False, name="global_step")
 				self.build_forward()
 				self.setup_meta_ops()
+		else:
+
+			device_name = FLAGS.gpuName \
+				      if FLAGS.gpu > 0.0 else None
+			with tf.device(device_name):
+				with self.graph.as_default() as g:
+					self.build_forward()
+					self.setup_meta_ops()
 		self.say('Finished in {}s\n'.format(
 			time.time() - start))
 	
@@ -141,17 +155,48 @@ class TFNet(object):
 		if self.FLAGS.summary is not None:
 			self.summary_op = tf.summary.merge_all()
 			self.writer = tf.summary.FileWriter(self.FLAGS.summary + 'train')
-		
-		self.sess = tf.Session(config = tf.ConfigProto(**cfg))
-		self.sess.run(tf.global_variables_initializer())
+		if self.FLAGS.jobType == 'worker':
+			is_chief = self.FLAGS.taskId == 0
+			init_op = tf.global_variables_initializer()
+			self.saver = tf.train.Saver(tf.global_variables(), 
+                                                    max_to_keep = self.FLAGS.keep)
+			sv = tf.train.Supervisor(
+				logdir=self.FLAGS.binary,
+				is_chief=is_chief,
+				init_op=init_op,
+				summary_op=None,
+				saver=None,
+				global_step=self.global_step)
 
-		if not self.ntrain: return
-		self.saver = tf.train.Saver(tf.global_variables(), 
-			max_to_keep = self.FLAGS.keep)
-		if self.FLAGS.load != 0: self.load_from_ckpt()
+			sess_config = tf.ConfigProto(
+				allow_soft_placement=True,
+				log_device_placement=False)
+			self.say("Distributed training waiting session on %s" % self.server.target)
+			self.sess = sv.prepare_or_wait_for_session(self.server.target, config=sess_config) 
+			# Start the queue runners.
+			queue_runners = tf.get_collection(tf.GraphKeys.QUEUE_RUNNERS)
+			sv.start_queue_runners(self.sess, queue_runners)
+			if is_chief:
+				self.say("chief worker start at ", datetime.now())
+				if self.FLAGS.load != 0: self.load_from_ckpt()
 		
-		if self.FLAGS.summary is not None:
-			self.writer.add_graph(self.sess.graph)
+				if self.FLAGS.summary is not None:
+					self.writer.add_graph(self.sess.graph)
+				sv.start_queue_runners(self.sess, self.chief_queue_runners)
+				self.sess.run(self.init_token_ops)
+			else:
+				print("non chief worker start at ", datetime.now())
+		else:
+			self.sess = tf.Session(config = tf.ConfigProto(**cfg))
+			self.sess.run(tf.global_variables_initializer())
+
+			if not self.ntrain: return
+			self.saver = tf.train.Saver(tf.global_variables(), 
+						    max_to_keep = self.FLAGS.keep)
+			if self.FLAGS.load != 0: self.load_from_ckpt()
+		
+			if self.FLAGS.summary is not None:
+				self.writer.add_graph(self.sess.graph)
 
 	def savepb(self):
 		"""

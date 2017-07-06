@@ -1,3 +1,5 @@
+import tensorflow as tf
+
 from .defaults import argHandler #Import the default arguments
 import os
 from .net.build import TFNet
@@ -19,7 +21,29 @@ def cliHandler(args):
     try: FLAGS.load = int(FLAGS.load)
     except: pass
 
-    tfnet = TFNet(FLAGS)
+    if FLAGS.jobType == 'ps' or FLAGS.jobType == 'worker' :
+        print('Distributed Training')
+        ps_hosts = FLAGS.psHosts.split(',')
+        print('PS hosts are: %s' % ps_hosts)
+        worker_hosts = FLAGS.workerHosts.split(',')
+        print('Worker hosts are: %s' % worker_hosts)
+        print('taskId is : %d' % FLAGS.taskId)
+        cluster = tf.train.ClusterSpec({'ps': ps_hosts,
+                                        'worker': worker_hosts})
+        num_of_workers = len(cluster.as_dict()['worker'])
+        server = tf.train.Server(
+            cluster,
+            job_name=FLAGS.jobType,
+            task_index=FLAGS.taskId)
+        
+        if FLAGS.jobType == 'ps' :
+            print('Running as Parameter Server');
+            server.join()
+            return
+        
+        tfnet = TFNet(FLAGS, cluster = cluster, replicas_to_aggregate = num_of_workers, num_of_workers = num_of_workers, server = server)
+    else:
+        tfnet = TFNet(FLAGS)
     
     if FLAGS.demo:
         tfnet.camera()

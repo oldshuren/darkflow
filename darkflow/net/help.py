@@ -1,3 +1,4 @@
+import tensorflow as tf
 """
 tfnet secondary (helper) methods
 """
@@ -14,9 +15,26 @@ old_graph_msg = 'Resolving old graph def {} (no guarantee)'
 def build_train_op(self):
     self.framework.loss(self.out)
     self.say('Building {} train op'.format(self.meta['model']))
-    optimizer = self._TRAINER[self.FLAGS.trainer](self.FLAGS.lr)
-    gradients = optimizer.compute_gradients(self.framework.loss)
-    self.train_op = optimizer.apply_gradients(gradients)
+    if self.FLAGS.jobType == 'worker' :
+        self.say('Using distributed training, num_of_workers = {}, replicas_to_aggregate = {}'.format(self.num_of_workers, self.replicas_to_aggregate))
+        train_ema = tf.train.ExponentialMovingAverage(0.99, self.global_step)
+        variables_to_average = (
+            tf.trainable_variables() + tf.moving_average_variables())
+        optimizer = self._TRAINER[self.FLAGS.trainer](self.FLAGS.lr)
+        optimizer  = tf.train.SyncReplicasOptimizer(
+            optimizer,
+            replicas_to_aggregate = self.replicas_to_aggregate,
+            variable_averages=train_ema,
+            variables_to_average=variables_to_average,
+            total_num_replicas = self.num_of_workers)
+        gradients = optimizer.compute_gradients(self.framework.loss)
+        self.train_op = optimizer.apply_gradients(gradients, global_step = self.global_step)
+        self.init_token_ops=[optimizer.get_init_tokens_op()]
+        self.chief_queue_runners=[optimizer.get_chief_queue_runner()]
+    else :
+        optimizer = self._TRAINER[self.FLAGS.trainer](self.FLAGS.lr)
+        gradients = optimizer.compute_gradients(self.framework.loss)
+        self.train_op = optimizer.apply_gradients(gradients)
 
 def load_from_ckpt(self):
     if self.FLAGS.load < 0: # load lastest ckpt

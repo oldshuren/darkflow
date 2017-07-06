@@ -15,6 +15,11 @@ train_stats = (
 pool = ThreadPool()
 
 def _save_ckpt(self, step, loss_profile):
+    if self.FLAGS.jobType == 'worker':
+        if self.FLAGS.taskId != 0 :
+            self.say('Distributed training, not chief, no check point to save')
+            return
+
     file = '{}-{}{}'
     model = self.meta['name']
 
@@ -56,7 +61,11 @@ def train(self):
         loss_mva = .9 * loss_mva + .1 * loss
         step_now = self.FLAGS.load + i + 1
 
-        self.writer.add_summary(fetched[2], step_now)
+        if self.FLAGS.jobType == 'worker':
+            if self.FLAGS.taskId == 0 :
+                self.writer.add_summary(fetched[2], step_now)
+        else:
+            self.writer.add_summary(fetched[2], step_now)
 
         form = 'step {} - loss {} - moving ave loss {}'
         self.say(form.format(step_now, loss, loss_mva))

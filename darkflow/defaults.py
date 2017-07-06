@@ -35,6 +35,11 @@ class argHandler(dict):
         self.define('saveVideo', False, 'Records video from input video or camera')
         self.define('pbLoad', '', 'path to .pb protobuf file (metaLoad must also be specified)')
         self.define('metaLoad', '', 'path to .meta file generated during --savepb that corresponds to .pb file')
+        # for distributed training
+        self.define('jobType', '', 'job type for distributed training, either ps or worker')
+        self.define('taskId', 0, 'task id for either ps or worker')
+        self.define('psHosts', '', 'list of ps (parameter server) hosts')
+        self.define('workerHosts', '', 'list of worker hosts')
 
     def define(self, argName, default, description):
         self[argName] = default
